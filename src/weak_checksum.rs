@@ -1,14 +1,12 @@
 use fxhash::FxHashMap as HashMap;
 
-
 pub type CacheKey = (u8, usize, usize);
-
 
 pub struct RollingCheckSum<'buf> {
     buffer: &'buf [u8],
     modulus: u32,
     block_size: usize,
-    cache: HashMap<CacheKey, u32>    
+    cache: HashMap<CacheKey, u32>,
 }
 
 #[derive(Debug)]
@@ -20,7 +18,11 @@ pub struct RollingCheckSumBuilder<'buf> {
 
 impl<'buf> RollingCheckSumBuilder<'buf> {
     pub fn new(buffer: &'buf [u8]) -> Self {
-        Self { buffer, modulus: None, block_size: None }
+        Self {
+            buffer,
+            modulus: None,
+            block_size: None,
+        }
     }
 
     pub fn modulus(mut self, modulus: u32) -> Self {
@@ -38,7 +40,7 @@ impl<'buf> RollingCheckSumBuilder<'buf> {
             buffer: self.buffer,
             modulus: self.modulus.unwrap_or(1 << 16),
             block_size: self.block_size.unwrap_or(1000),
-            cache: HashMap::default()
+            cache: HashMap::default(),
         }
     }
 }
@@ -48,9 +50,13 @@ fn build_key(is_function_a: bool, left: usize, right: usize) -> CacheKey {
 }
 
 impl<'buf> RollingCheckSum<'buf> {
-
     pub fn new(buffer: &'buf [u8]) -> Self {
-        Self { buffer, modulus: 1 << 16, block_size: 1000, cache: HashMap::default() }
+        Self {
+            buffer,
+            modulus: 1 << 16,
+            block_size: 1000,
+            cache: HashMap::default(),
+        }
     }
 
     #[inline(always)]
@@ -64,7 +70,9 @@ impl<'buf> RollingCheckSum<'buf> {
             sum = (sum + summand) % self.modulus
         }
         let result = sum % self.modulus;
-        self.cache.entry(build_key(true, left, right)).or_insert(result);
+        self.cache
+            .entry(build_key(true, left, right))
+            .or_insert(result);
         result
     }
 
@@ -79,7 +87,9 @@ impl<'buf> RollingCheckSum<'buf> {
             sum = (sum + summand) % self.modulus;
         }
         let result = sum % self.modulus;
-        self.cache.entry(build_key(false, left, right)).or_insert(result);
+        self.cache
+            .entry(build_key(false, left, right))
+            .or_insert(result);
         result
     }
 
@@ -88,12 +98,14 @@ impl<'buf> RollingCheckSum<'buf> {
             return *self.cache.get(&build_key(true, left, right)).unwrap();
         }
         if left == 0 {
-            
             self.a_expanded(left, right)
-        }
-        else {
-            let result = (self.a_recurrence(left - 1, right - 1) + self.buffer[right] as u32 - self.buffer[left - 1] as u32) % self.modulus;
-            self.cache.entry(build_key(true, left, right)).or_insert(result);
+        } else {
+            let result = (self.a_recurrence(left - 1, right - 1) + self.buffer[right] as u32
+                - self.buffer[left - 1] as u32)
+                % self.modulus;
+            self.cache
+                .entry(build_key(true, left, right))
+                .or_insert(result);
             result
         }
     }
@@ -105,16 +117,18 @@ impl<'buf> RollingCheckSum<'buf> {
 
         if left == 0 {
             self.b_expanded(left, right) % self.modulus
-        }
-        else {
-
+        } else {
             let first_term = self.b_recurrence(left - 1, right - 1) % self.modulus;
-            let middle_term = (self.buffer[left - 1] as u32 * (right - left + 1) as u32) % self.modulus;
+            let middle_term =
+                (self.buffer[left - 1] as u32 * (right - left + 1) as u32) % self.modulus;
             let last_term = self.a_recurrence(left, right) % self.modulus;
 
-            let res = ((first_term as i64 - middle_term as i64 + last_term as i64) % (self.modulus as i64)) as u32;
+            let res = ((first_term as i64 - middle_term as i64 + last_term as i64)
+                % (self.modulus as i64)) as u32;
             let result = res % self.modulus;
-            self.cache.entry(build_key(false, left, right)).or_insert(result);
+            self.cache
+                .entry(build_key(false, left, right))
+                .or_insert(result);
 
             result
         }
@@ -125,7 +139,7 @@ impl<'buf> RollingCheckSum<'buf> {
         (self.a_recurrence(left, right) << 16) + self.b_recurrence(left, right)
     }
 
-    pub fn rolling_checksums<'roll>(&'roll mut self) -> RollingCheckSumIterator<'roll, 'buf> 
+    pub fn rolling_checksums<'roll>(&'roll mut self) -> RollingCheckSumIterator<'roll, 'buf>
     where
         'buf: 'roll,
     {
@@ -144,7 +158,7 @@ pub struct RollingCheckSumIterator<'roll, 'buf> {
     right: usize,
 }
 
-impl<'roll, 'buff> Iterator for RollingCheckSumIterator<'roll, 'buff> 
+impl<'roll, 'buff> Iterator for RollingCheckSumIterator<'roll, 'buff>
 where
     'buff: 'roll,
 {
@@ -156,8 +170,7 @@ where
             self.left += 1;
             self.right += 1;
             Some(checksum)
-        }
-        else {
+        } else {
             None
         }
     }
@@ -170,12 +183,10 @@ pub fn rolling_checksum(buffer: &[u8]) -> Vec<u32> {
     rolling_checksum.rolling_checksums().collect()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
-
 
     #[test]
     fn rolling_checksum_of_buffer() {
@@ -227,5 +238,4 @@ mod tests {
             });
         }
     }
-
 }
