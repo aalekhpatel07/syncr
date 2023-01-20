@@ -88,8 +88,8 @@ impl<'buf> RollingCheckSum<'buf> {
             return *self.cache.get(&build_key(true, left, right)).unwrap();
         }
         if left == 0 {
-            let computed = self.a_expanded(left, right);
-            computed
+            
+            self.a_expanded(left, right)
         }
         else {
             let result = (self.a_recurrence(left - 1, right - 1) + self.buffer[right] as u32 - self.buffer[left - 1] as u32) % self.modulus;
@@ -104,7 +104,7 @@ impl<'buf> RollingCheckSum<'buf> {
         }
 
         if left == 0 {
-            return self.b_expanded(left, right) % self.modulus;
+            self.b_expanded(left, right) % self.modulus
         }
         else {
 
