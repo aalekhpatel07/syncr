@@ -199,7 +199,7 @@ mod tests {
     proptest! {
         #[test]
         fn rolling_checksum_a_of_buffer_is_same_as_expanded_checksum_a(buffer in prop::collection::vec(0u8..=255, 0..=100)) {
-            let mut rolling_checksum = RollingCheckSum::new(&buffer);
+            let mut rolling_checksum = RollingCheckSumBuilder::new(&buffer).block_size(10).build();
             for i in 0..buffer.len() {
                 for j in i..buffer.len() {
                     prop_assert_eq!(rolling_checksum.a_expanded(i, j), rolling_checksum.a_recurrence(i, j));
@@ -209,7 +209,7 @@ mod tests {
 
         #[test]
         fn rolling_checksum_b_of_buffer_is_same_as_expanded_checksum_b(buffer in prop::collection::vec(0u8..=255, 0..=100)) {
-            let mut rolling_checksum = RollingCheckSum::new(&buffer);
+            let mut rolling_checksum = RollingCheckSumBuilder::new(&buffer).block_size(10).build();
             for i in 0..buffer.len() {
                 for j in i..buffer.len() {
                     prop_assert_eq!(rolling_checksum.b_expanded(i, j), rolling_checksum.b_recurrence(i, j));
@@ -219,7 +219,7 @@ mod tests {
 
         #[test]
         fn rolling_checksum_of_buffer_is_same_as_expanded_checksum(buffer in prop::collection::vec(0u8..=255, 0..=100)) {
-            let mut rolling_checksum = RollingCheckSum::new(&buffer);
+            let mut rolling_checksum = RollingCheckSumBuilder::new(&buffer).block_size(10).build();
             for i in 0..buffer.len() {
                 for j in i..buffer.len() {
                     prop_assert_eq!(rolling_checksum.checksum(i, j), (rolling_checksum.a_expanded(i, j) << 16) + rolling_checksum.b_expanded(i, j));
