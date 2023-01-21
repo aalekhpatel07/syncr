@@ -26,14 +26,14 @@ pub fn main() {
     let args = Args::parse();
     for file in args.files {
         let buffer = std::fs::read(file).unwrap();
-        let mut checksum = RollingCheckSumBuilder::new(&buffer)
+        let rolling_checksum = RollingCheckSumBuilder::new()
             .block_size(args.block_size)
             .modulus(args.modulus)
             .build();
 
         let mut writer = BufWriter::new(std::io::stdout());
 
-        for checksum in checksum.rolling_checksums() {
+        for checksum in rolling_checksum.rolling_checksums(&buffer) {
             write!(writer, "{}", checksum).unwrap();
         }
         writer.flush().unwrap();

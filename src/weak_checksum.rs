@@ -1,25 +1,32 @@
-use fxhash::FxHashMap as HashMap;
 
-pub type CacheKey = (u8, usize, usize);
-
-pub struct RollingCheckSum<'buf> {
-    buffer: &'buf [u8],
+/// The weak rolling checksum is used in the 
+/// [rsync algorithm] to quickly verify whether two
+/// blocks of data are the same. 
+/// 
+/// Note: It is not guaranteed if the blocks are the same, 
+/// but it is a good heuristic for a first-pass. Only those code blocks
+/// that pass the weak checksum are then compared using the
+/// strong checksum.
+/// 
+/// [Rsync Algorithm]: https://www.andrew.cmu.edu/course/15-749/READINGS/required/cas/tridgell96.pdf
+#[derive(Debug)]
+pub struct RollingCheckSum {
+    /// The modulus to use for the checksum.
+    /// This is typically 2^16.
     modulus: u32,
+    /// The size of each chunk to calculate a running checksum for (i.e. window size).
     block_size: usize,
-    cache: HashMap<CacheKey, u32>,
 }
 
 #[derive(Debug)]
-pub struct RollingCheckSumBuilder<'buf> {
-    buffer: &'buf [u8],
+pub struct RollingCheckSumBuilder {
     modulus: Option<u32>,
     block_size: Option<usize>,
 }
 
-impl<'buf> RollingCheckSumBuilder<'buf> {
-    pub fn new(buffer: &'buf [u8]) -> Self {
+impl RollingCheckSumBuilder {
+    pub fn new() -> Self {
         Self {
-            buffer,
             modulus: None,
             block_size: None,
         }
@@ -35,152 +42,117 @@ impl<'buf> RollingCheckSumBuilder<'buf> {
         self
     }
 
-    pub fn build(self) -> RollingCheckSum<'buf> {
+    pub fn build(self) -> RollingCheckSum {
         RollingCheckSum {
-            buffer: self.buffer,
             modulus: self.modulus.unwrap_or(1 << 16),
             block_size: self.block_size.unwrap_or(1000),
-            cache: HashMap::default(),
         }
     }
 }
 
-fn build_key(is_function_a: bool, left: usize, right: usize) -> CacheKey {
-    (is_function_a as u8, left, right)
-}
-
-impl<'buf> RollingCheckSum<'buf> {
-    pub fn new(buffer: &'buf [u8]) -> Self {
+impl RollingCheckSum {
+    pub fn new() -> Self {
         Self {
-            buffer,
             modulus: 1 << 16,
             block_size: 1000,
-            cache: HashMap::default(),
         }
     }
 
-    #[inline(always)]
-    fn a_expanded(&mut self, left: usize, right: usize) -> u32 {
-        if self.cache.contains_key(&build_key(true, left, right)) {
-            return *self.cache.get(&build_key(true, left, right)).unwrap();
+    fn a_expanded(&self, left: usize, right: usize, buffer: &[u8]) -> u32 {
+        if right >= buffer.len() {
+            return 0;
         }
         let mut sum: u32 = 0;
         for i in left..=right {
-            let summand = self.buffer[i] as u32;
+            let summand = buffer[i] as u32;
             sum = (sum + summand) % self.modulus
         }
-        let result = sum % self.modulus;
-        self.cache
-            .entry(build_key(true, left, right))
-            .or_insert(result);
-        result
+        sum % self.modulus
     }
 
-    #[inline(always)]
-    fn b_expanded(&mut self, left: usize, right: usize) -> u32 {
-        if self.cache.contains_key(&build_key(false, left, right)) {
-            return *self.cache.get(&build_key(false, left, right)).unwrap();
+    fn b_expanded(&self, left: usize, right: usize, buffer: &[u8]) -> u32 {
+        if right >= buffer.len() {
+            return 0;
         }
         let mut sum = 0;
         for i in left..=right {
-            let summand = (self.buffer[i] as u32) * (right - i + 1) as u32;
+            let summand = (buffer[i] as u32) * (right - i + 1) as u32;
             sum = (sum + summand) % self.modulus;
         }
-        let result = sum % self.modulus;
-        self.cache
-            .entry(build_key(false, left, right))
-            .or_insert(result);
-        result
+        sum % self.modulus
     }
 
-    fn a_recurrence(&mut self, left: usize, right: usize) -> u32 {
-        if self.cache.contains_key(&build_key(true, left, right)) {
-            return *self.cache.get(&build_key(true, left, right)).unwrap();
-        }
-        if left == 0 {
-            self.a_expanded(left, right)
-        } else {
-            let result = (self.a_recurrence(left - 1, right - 1) + self.buffer[right] as u32
-                - self.buffer[left - 1] as u32)
-                % self.modulus;
-            self.cache
-                .entry(build_key(true, left, right))
-                .or_insert(result);
-            result
-        }
-    }
-
-    fn b_recurrence(&mut self, left: usize, right: usize) -> u32 {
-        if self.cache.contains_key(&build_key(false, left, right)) {
-            return *self.cache.get(&build_key(false, left, right)).unwrap();
-        }
-
-        if left == 0 {
-            self.b_expanded(left, right) % self.modulus
-        } else {
-            let first_term = self.b_recurrence(left - 1, right - 1) % self.modulus;
-            let middle_term =
-                (self.buffer[left - 1] as u32 * (right - left + 1) as u32) % self.modulus;
-            let last_term = self.a_recurrence(left, right) % self.modulus;
-
-            let res = ((first_term as i64 - middle_term as i64 + last_term as i64)
-                % (self.modulus as i64)) as u32;
-            let result = res % self.modulus;
-            self.cache
-                .entry(build_key(false, left, right))
-                .or_insert(result);
-
-            result
-        }
-    }
-
-    #[inline(always)]
-    pub fn checksum(&mut self, left: usize, right: usize) -> u32 {
-        (self.a_recurrence(left, right) << 16) + self.b_recurrence(left, right)
-    }
-
-    pub fn rolling_checksums<'roll>(&'roll mut self) -> RollingCheckSumIterator<'roll, 'buf>
-    where
-        'buf: 'roll,
+    pub fn rolling_checksums<'buf>(&self, buffer: &'buf [u8]) -> RollingCheckSumIterator<'buf>
     {
         let block_size = self.block_size;
         RollingCheckSumIterator {
-            rolling_checksum: self,
-            left: 0,
-            right: block_size,
+            buffer,
+            modulus: self.modulus as isize,
+            previous_k: 0,
+            previous_l: block_size - 1,
+            a_k_l: self.a_expanded(0, block_size - 1, buffer) as isize,
+            b_k_l: self.b_expanded(0, block_size - 1, buffer) as isize,
+            ended: false,
         }
     }
 }
 
-pub struct RollingCheckSumIterator<'roll, 'buf> {
-    rolling_checksum: &'roll mut RollingCheckSum<'buf>,
-    left: usize,
-    right: usize,
+#[derive(Debug)]
+pub struct RollingCheckSumIterator<'buf> {
+    buffer: &'buf [u8],
+    modulus: isize,
+    previous_k: usize,
+    previous_l: usize,
+    a_k_l: isize,
+    b_k_l: isize,
+    ended: bool,
 }
 
-impl<'roll, 'buff> Iterator for RollingCheckSumIterator<'roll, 'buff>
-where
-    'buff: 'roll,
-{
+
+impl<'buf> Iterator for RollingCheckSumIterator<'buf> {
     type Item = u32;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.right < self.rolling_checksum.buffer.len() {
-            let checksum = self.rolling_checksum.checksum(self.left, self.right);
-            self.left += 1;
-            self.right += 1;
-            Some(checksum)
-        } else {
-            None
+        if self.ended {
+            return None;
         }
+        if self.previous_l + 1 >= self.buffer.len() || self.previous_k >= self.buffer.len() {
+            let checksum = self.a_k_l + (self.b_k_l << 16);
+            self.ended = true;
+            return Some(checksum as u32);
+        }
+        let new_a_k_l = (
+            self.a_k_l 
+            + (self.buffer[self.previous_l + 1] as isize)
+            - (self.buffer[self.previous_k] as isize)
+        ).rem_euclid(self.modulus);
+
+        let new_b_k_l = (
+            self.b_k_l 
+            + new_a_k_l 
+            - (
+                (self.previous_l as isize - self.previous_k as isize + 1) * (self.buffer[self.previous_k] as isize)
+            )
+        ).rem_euclid(self.modulus);
+
+        self.previous_k += 1;
+        self.previous_l += 1;
+
+        let checksum = self.a_k_l + (self.b_k_l << 16);
+
+        self.a_k_l = new_a_k_l.rem_euclid(self.modulus);
+        self.b_k_l = new_b_k_l.rem_euclid(self.modulus);
+
+        Some(checksum as u32)
     }
 }
+
 
 /// Utility function to compute the rolling weak checksum of a buffer
 /// meant for a direct public API.
 pub fn rolling_checksum(buffer: &[u8]) -> Vec<u32> {
-    let mut rolling_checksum = RollingCheckSum::new(buffer);
-    rolling_checksum.rolling_checksums().collect()
+    let rolling_checksum = RollingCheckSum::new();
+    rolling_checksum.rolling_checksums(buffer).collect()
 }
 
 #[cfg(test)]
@@ -191,51 +163,41 @@ mod tests {
     #[test]
     fn rolling_checksum_of_buffer() {
         let buffer = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09];
-        let mut rolling_checksum = RollingCheckSum::new(&buffer);
-        assert_eq!(rolling_checksum.a_expanded(0, 1), 1);
-        assert_eq!(rolling_checksum.a_expanded(0, 2), 3);
+        let rolling_checksum = RollingCheckSum::new();
+        assert_eq!(rolling_checksum.a_expanded(0, 1, &buffer), 1);
+        assert_eq!(rolling_checksum.a_expanded(0, 2, &buffer), 3);
     }
 
     proptest! {
-        #[test]
-        fn rolling_checksum_a_of_buffer_is_same_as_expanded_checksum_a(buffer in prop::collection::vec(0u8..=255, 0..=100)) {
-            let mut rolling_checksum = RollingCheckSumBuilder::new(&buffer).block_size(10).build();
-            for i in 0..buffer.len() {
-                for j in i..buffer.len() {
-                    prop_assert_eq!(rolling_checksum.a_expanded(i, j), rolling_checksum.a_recurrence(i, j));
-                }
-            }
-        }
 
         #[test]
-        fn rolling_checksum_b_of_buffer_is_same_as_expanded_checksum_b(buffer in prop::collection::vec(0u8..=255, 0..=100)) {
-            let mut rolling_checksum = RollingCheckSumBuilder::new(&buffer).block_size(10).build();
-            for i in 0..buffer.len() {
-                for j in i..buffer.len() {
-                    prop_assert_eq!(rolling_checksum.b_expanded(i, j), rolling_checksum.b_recurrence(i, j));
-                }
-            }
-        }
-
-        #[test]
-        fn rolling_checksum_of_buffer_is_same_as_expanded_checksum(buffer in prop::collection::vec(0u8..=255, 0..=100)) {
-            let mut rolling_checksum = RollingCheckSumBuilder::new(&buffer).block_size(10).build();
-            for i in 0..buffer.len() {
-                for j in i..buffer.len() {
-                    prop_assert_eq!(rolling_checksum.checksum(i, j), (rolling_checksum.a_expanded(i, j) << 16) + rolling_checksum.b_expanded(i, j));
-                }
-            }
-        }
-
-        #[test]
-        fn rolling_checksum_of_buffer_is_an_iterator(buffer in prop::collection::vec(0u8..=255, 0..=100)) {
-            let mut rolling_checksum = RollingCheckSum::new(&buffer);
+        fn rolling_checksum_of_buffer_is_an_iterator(buffer in prop::collection::vec(0u8..=255, 0..=10000)) {
+            let rolling_checksum = RollingCheckSum::new();
             rolling_checksum
-            .rolling_checksums()
-            .for_each(|v| {
-                assert!(v > 0);
-                assert!(v < 1 << 16);
-            });
+            .rolling_checksums(&buffer)
+            .for_each(drop);
+        }
+
+        #[test]
+        fn rolling_checksum_both_implementation_give_same_result(buffer in prop::collection::vec(0u8..=255, 0..=10000)) {
+            let rolling_checksum = RollingCheckSum::new();
+            let block_size = rolling_checksum.block_size;
+            let mut rolling_checksum_iterator_forward = rolling_checksum.rolling_checksums(&buffer);
+            for idx in 0..buffer.len() {
+                if idx as isize > buffer.len() as isize - block_size as isize {
+                    break;
+                }
+                let expected_value = rolling_checksum.a_expanded(idx, idx + block_size - 1, &buffer) + (rolling_checksum.b_expanded(idx, idx + block_size - 1, &buffer) << 16);
+                let iterator_forward_next = rolling_checksum_iterator_forward.next();
+
+                prop_assert_eq!(
+                    Some(expected_value), 
+                    iterator_forward_next,
+                    "idx: {}, buffer_len: {}", 
+                    idx,
+                    buffer.len()
+                );
+            }
         }
     }
 }

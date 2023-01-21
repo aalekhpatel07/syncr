@@ -17,8 +17,8 @@ pub fn bench_weak_checksum(c: &mut Criterion) {
 
                 b.iter(|| {
                     rng.fill_bytes(&mut buffer);
-                    RollingCheckSum::new(&buffer)
-                        .rolling_checksums()
+                    RollingCheckSum::new()
+                        .rolling_checksums(&buffer)
                         .for_each(drop);
                 });
             },
