@@ -1,3 +1,7 @@
+use crate::{ChecksumConfig, Checksums};
+
+
+
 
 /// The weak rolling checksum is used in the 
 /// [rsync algorithm] to quickly verify whether two
@@ -10,7 +14,7 @@
 /// 
 /// [Rsync Algorithm]: https://www.andrew.cmu.edu/course/15-749/READINGS/required/cas/tridgell96.pdf
 #[derive(Debug)]
-pub struct RollingCheckSum {
+pub struct WeakCheckSum {
     /// The modulus to use for the checksum.
     /// This is typically 2^16.
     modulus: u32,
@@ -19,18 +23,19 @@ pub struct RollingCheckSum {
 }
 
 #[derive(Debug)]
-pub struct RollingCheckSumBuilder {
+pub struct WeakCheckSumBuilder {
     modulus: Option<u32>,
     block_size: Option<usize>,
 }
 
-impl RollingCheckSumBuilder {
+impl WeakCheckSumBuilder {
     pub fn new() -> Self {
         Self {
             modulus: None,
             block_size: None,
         }
     }
+
 
     pub fn modulus(mut self, modulus: u32) -> Self {
         self.modulus = Some(modulus);
@@ -42,85 +47,119 @@ impl RollingCheckSumBuilder {
         self
     }
 
-    pub fn build(self) -> RollingCheckSum {
-        RollingCheckSum {
+    pub fn build(self) -> WeakCheckSum {
+        WeakCheckSum {
             modulus: self.modulus.unwrap_or(1 << 16),
             block_size: self.block_size.unwrap_or(1000),
         }
     }
 }
 
-impl RollingCheckSum {
-    pub fn new() -> Self {
+impl Default for WeakCheckSum {
+    fn default() -> Self {
         Self {
             modulus: 1 << 16,
             block_size: 1000,
         }
     }
+}
 
-    fn a_expanded(&self, left: usize, right: usize, buffer: &[u8]) -> u32 {
+impl WeakCheckSum {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_config(config: &ChecksumConfig) -> Self {
+        Self {
+            block_size: config.block_size,
+            modulus: config.modulus
+        }
+    }
+
+    pub fn a_expanded(modulus: u32, left: usize, right: usize, buffer: &[u8]) -> u32 {
         if right >= buffer.len() {
             return 0;
         }
         let mut sum: u32 = 0;
         for i in left..=right {
             let summand = buffer[i] as u32;
-            sum = (sum + summand) % self.modulus
+            sum = (sum + summand) % modulus
         }
-        sum % self.modulus
+        sum % modulus
     }
 
-    fn b_expanded(&self, left: usize, right: usize, buffer: &[u8]) -> u32 {
+    pub fn b_expanded(modulus: u32, left: usize, right: usize, buffer: &[u8]) -> u32 {
         if right >= buffer.len() {
             return 0;
         }
         let mut sum = 0;
         for i in left..=right {
             let summand = (buffer[i] as u32) * (right - i + 1) as u32;
-            sum = (sum + summand) % self.modulus;
+            sum = (sum + summand) % modulus;
         }
-        sum % self.modulus
+        sum % modulus
     }
 
-    pub fn rolling_checksums<'buf>(&self, buffer: &'buf [u8]) -> RollingCheckSumIterator<'buf>
-    {
+}
+
+impl Checksums for WeakCheckSum {
+    type Output = u32;
+
+    fn checksums<'buf>(&self, buffer: &'buf [u8]) -> Box<dyn Iterator<Item=Self::Output> + 'buf > {
         let block_size = self.block_size;
         if buffer.len() == 0 {
-            return RollingCheckSumIterator {
-                buffer,
-                modulus: self.modulus as isize,
-                previous_k: 0,
-                previous_l: 0,
-                a_k_l: 0,
-                b_k_l: 0,
-                ended: true,
-            };
+            return Box::new(
+                WeakCheckSumRollingIterator {
+                    buffer,
+                    modulus: self.modulus as isize,
+                    previous_k: 0,
+                    previous_l: 0,
+                    a_k_l: 0,
+                    b_k_l: 0,
+                    ended: true,
+                }
+            );
         }
         if buffer.len() < block_size {
-            return RollingCheckSumIterator {
+            return Box::new(
+                WeakCheckSumRollingIterator {
+                    buffer,
+                    modulus: self.modulus as isize,
+                    previous_k: 0,
+                    previous_l: buffer.len() - 1,
+                    a_k_l: WeakCheckSum::a_expanded(self.modulus, 0, buffer.len() - 1, buffer) as isize,
+                    b_k_l: WeakCheckSum::b_expanded(self.modulus, 0, buffer.len() - 1, buffer) as isize,
+                    ended: false,
+                }
+            );
+        }
+        Box::new(
+            WeakCheckSumRollingIterator {
                 buffer,
                 modulus: self.modulus as isize,
                 previous_k: 0,
-                previous_l: buffer.len() - 1,
-                a_k_l: self.a_expanded(0, buffer.len() - 1, buffer) as isize,
-                b_k_l: self.b_expanded(0, buffer.len() - 1, buffer) as isize,
+                previous_l: block_size - 1,
+                a_k_l: WeakCheckSum::a_expanded(self.modulus, 0, block_size - 1, buffer) as isize,
+                b_k_l: WeakCheckSum::b_expanded(self.modulus, 0, block_size - 1, buffer) as isize,
                 ended: false,
-            };
-        }
-        RollingCheckSumIterator {
-            buffer,
-            modulus: self.modulus as isize,
-            previous_k: 0,
-            previous_l: block_size - 1,
-            a_k_l: self.a_expanded(0, block_size - 1, buffer) as isize,
-            b_k_l: self.b_expanded(0, block_size - 1, buffer) as isize,
-            ended: false,
-        }
+            }
+        )
+    }
+
+    fn checksums_non_overlapping<'buf>(&self, data: &'buf [u8]) -> Box<dyn Iterator<Item=Self::Output> + 'buf> {
+        Box::new(
+            WeakChecksumNonOverlappingIterator {
+                buffer: data,
+                modulus: self.modulus as isize,
+                left: 0,
+                right: self.block_size,
+                window_size: self.block_size,
+            }
+        )
     }
 }
 
 #[derive(Debug)]
-pub struct RollingCheckSumIterator<'buf> {
+pub struct WeakCheckSumRollingIterator<'buf> {
     buffer: &'buf [u8],
     modulus: isize,
     previous_k: usize,
@@ -130,8 +169,34 @@ pub struct RollingCheckSumIterator<'buf> {
     ended: bool,
 }
 
+#[derive(Debug)]
+pub struct WeakChecksumNonOverlappingIterator<'buf> {
+    buffer: &'buf [u8],
+    modulus: isize,
+    left: usize,
+    right: usize,
+    window_size: usize,
+}
 
-impl<'buf> Iterator for RollingCheckSumIterator<'buf> {
+impl<'buf> Iterator for WeakChecksumNonOverlappingIterator<'buf> {
+    type Item = u32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.right > self.buffer.len() {
+            return None;
+        }
+        let checksum = 
+            WeakCheckSum::a_expanded(self.modulus as u32, self.left, self.right, self.buffer) as u32    
+            + (WeakCheckSum::b_expanded(self.modulus as u32, self.left, self.right, self.buffer) as u32) << 16;
+        
+        self.left += self.window_size;
+        self.right += self.window_size;
+        Some(checksum)
+    }
+}
+
+
+impl<'buf> Iterator for WeakCheckSumRollingIterator<'buf> {
     type Item = u32;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -172,10 +237,12 @@ impl<'buf> Iterator for RollingCheckSumIterator<'buf> {
 
 /// Utility function to compute the rolling weak checksum of a buffer
 /// meant for a direct public API.
-pub fn rolling_checksum(buffer: &[u8]) -> Vec<u32> {
-    let rolling_checksum = RollingCheckSum::new();
-    rolling_checksum.rolling_checksums(buffer).collect()
+pub fn rolling_checksum(buffer: &'static [u8]) -> Vec<u32> {
+    let rolling_checksum = WeakCheckSum::new();
+    rolling_checksum.checksums(buffer).collect()
 }
+
+
 
 #[cfg(test)]
 mod tests {
@@ -185,44 +252,44 @@ mod tests {
     #[test]
     fn rolling_checksum_of_buffer() {
         let buffer = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09];
-        let rolling_checksum = RollingCheckSum::new();
-        assert_eq!(rolling_checksum.a_expanded(0, 1, &buffer), 1);
-        assert_eq!(rolling_checksum.a_expanded(0, 2, &buffer), 3);
+        let rolling_checksum = WeakCheckSum::new();
+        assert_eq!(WeakCheckSum::a_expanded(rolling_checksum.modulus, 0, 1, &buffer), 1);
+        assert_eq!(WeakCheckSum::a_expanded(rolling_checksum.modulus, 0, 2, &buffer), 3);
     }
 
     #[test]
     fn rolling_checksum_of_empty_buffer_does_not_exist() {
-        let buffer = [];
-        let rolling_checksum = RollingCheckSum::new();
-        assert_eq!(rolling_checksum.rolling_checksums(&buffer).count(), 0);
+        let buffer: [u8; 0] = [];
+        let rolling_checksum = WeakCheckSum::new();
+        assert_eq!(rolling_checksum.checksums(&buffer).count(), 0);
     }
 
     proptest! {
 
         #[test]
         fn rolling_checksum_of_buffer_is_an_iterator(buffer in prop::collection::vec(0u8..=255, 0..=10000)) {
-            let rolling_checksum = RollingCheckSum::new();
+            let rolling_checksum = WeakCheckSum::new();
             rolling_checksum
-            .rolling_checksums(&buffer)
+            .checksums(&buffer)
             .for_each(drop);
         }
 
         #[test]
         fn rolling_checksum_has_one_entry_for_smol_block(buffer in prop::collection::vec(0u8..=255, 1..=900)) {
-            let rolling_checksum = RollingCheckSum::new();
-            prop_assert_eq!(rolling_checksum.rolling_checksums(&buffer).count(), 1);
+            let rolling_checksum = WeakCheckSum::new();
+            prop_assert_eq!(rolling_checksum.checksums(&buffer).count(), 1);
         }
 
         #[test]
         fn rolling_checksum_both_implementation_give_same_result(buffer in prop::collection::vec(0u8..=255, 0..=10000)) {
-            let rolling_checksum = RollingCheckSum::new();
+            let rolling_checksum = WeakCheckSum::new();
             let block_size = rolling_checksum.block_size;
-            let mut rolling_checksum_iterator_forward = rolling_checksum.rolling_checksums(&buffer);
+            let mut rolling_checksum_iterator_forward = rolling_checksum.checksums(&buffer);
             for idx in 0..buffer.len() {
                 if idx as isize > buffer.len() as isize - block_size as isize {
                     break;
                 }
-                let expected_value = rolling_checksum.a_expanded(idx, idx + block_size - 1, &buffer) + (rolling_checksum.b_expanded(idx, idx + block_size - 1, &buffer) << 16);
+                let expected_value = WeakCheckSum::a_expanded(rolling_checksum.modulus, idx, idx + block_size - 1, &buffer) + (WeakCheckSum::b_expanded(rolling_checksum.modulus, idx, idx + block_size - 1, &buffer) << 16);
                 let iterator_forward_next = rolling_checksum_iterator_forward.next();
 
                 prop_assert_eq!(

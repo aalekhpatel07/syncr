@@ -6,8 +6,14 @@ license-file = "./LICENSE.md"
 authors = ["Aalekh Patel <aalekh.gwpeck.7998@icloud.com>"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["md4"]
+md4 = ["dep:md4"]
+
 [dependencies]
 clap = { version = "4.1.1", features = ["derive"] }
+itertools = "0.10.5"
+md4 = { version = "0.10.2", optional = true }
 
 [dev-dependencies]
 criterion = "0.4.0"
