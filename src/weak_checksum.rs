@@ -85,6 +85,28 @@ impl RollingCheckSum {
     pub fn rolling_checksums<'buf>(&self, buffer: &'buf [u8]) -> RollingCheckSumIterator<'buf>
     {
         let block_size = self.block_size;
+        if buffer.len() == 0 {
+            return RollingCheckSumIterator {
+                buffer,
+                modulus: self.modulus as isize,
+                previous_k: 0,
+                previous_l: 0,
+                a_k_l: 0,
+                b_k_l: 0,
+                ended: true,
+            };
+        }
+        if buffer.len() < block_size {
+            return RollingCheckSumIterator {
+                buffer,
+                modulus: self.modulus as isize,
+                previous_k: 0,
+                previous_l: buffer.len() - 1,
+                a_k_l: self.a_expanded(0, buffer.len() - 1, buffer) as isize,
+                b_k_l: self.b_expanded(0, buffer.len() - 1, buffer) as isize,
+                ended: false,
+            };
+        }
         RollingCheckSumIterator {
             buffer,
             modulus: self.modulus as isize,
@@ -168,6 +190,13 @@ mod tests {
         assert_eq!(rolling_checksum.a_expanded(0, 2, &buffer), 3);
     }
 
+    #[test]
+    fn rolling_checksum_of_empty_buffer_does_not_exist() {
+        let buffer = [];
+        let rolling_checksum = RollingCheckSum::new();
+        assert_eq!(rolling_checksum.rolling_checksums(&buffer).count(), 0);
+    }
+
     proptest! {
 
         #[test]
@@ -176,6 +205,12 @@ mod tests {
             rolling_checksum
             .rolling_checksums(&buffer)
             .for_each(drop);
+        }
+
+        #[test]
+        fn rolling_checksum_has_one_entry_for_smol_block(buffer in prop::collection::vec(0u8..=255, 1..=900)) {
+            let rolling_checksum = RollingCheckSum::new();
+            prop_assert_eq!(rolling_checksum.rolling_checksums(&buffer).count(), 1);
         }
 
         #[test]
