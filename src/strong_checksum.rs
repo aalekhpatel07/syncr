@@ -1,7 +1,7 @@
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct StrongCheckSum {
-    block_size: usize,
+    pub block_size: usize,
 }
 
 impl Default for StrongCheckSum {
@@ -21,6 +21,10 @@ impl StrongCheckSum {
         Self {
             block_size: config.block_size,
         }
+    }
+    
+    pub fn checksum_for_block<'buf>(&self, starting_index: usize, data: &'buf [u8] ) -> u128 {
+        hash(&data[starting_index..starting_index + self.block_size])
     }
 }
 

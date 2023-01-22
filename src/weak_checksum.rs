@@ -13,7 +13,7 @@ use crate::{ChecksumConfig, Checksums};
 /// strong checksum.
 /// 
 /// [Rsync Algorithm]: https://www.andrew.cmu.edu/course/15-749/READINGS/required/cas/tridgell96.pdf
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct WeakCheckSum {
     /// The modulus to use for the checksum.
     /// This is typically 2^16.
@@ -146,14 +146,17 @@ impl Checksums for WeakCheckSum {
     }
 
     fn checksums_non_overlapping<'buf>(&self, data: &'buf [u8]) -> Box<dyn Iterator<Item=Self::Output> + 'buf> {
+        let iterator = self.checksums(data).step_by(self.block_size);
+        if data.len() % self.block_size != 0 {
+            let last_chunk_start_index = data.len() - (data.len() % self.block_size);
+            let last_chunk = data[last_chunk_start_index..].as_ref();
+            return Box::new(
+                iterator
+                .chain(self.checksums(last_chunk))
+            );
+        }
         Box::new(
-            WeakChecksumNonOverlappingIterator {
-                buffer: data,
-                modulus: self.modulus as isize,
-                left: 0,
-                right: self.block_size,
-                window_size: self.block_size,
-            }
+            iterator
         )
     }
 }

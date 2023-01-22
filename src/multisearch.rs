@@ -23,8 +23,8 @@ impl Matcher {
     }
 
     pub fn compile(&mut self, data: &[u8]) {
-        let mut hash_table = HashMap::new();
         let checksums = self.checksum.checksums(data).collect::<Vec<_>>();
+        let mut hash_table = HashMap::new();
 
         for (offset, &checksum) in checksums.iter().enumerate() {
 

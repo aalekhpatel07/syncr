@@ -1,10 +1,14 @@
 use itertools::Itertools;
+use network::Message;
 use strong_checksum::StrongCheckSum;
 use weak_checksum::WeakCheckSum;
 
 pub mod weak_checksum;
 pub mod multisearch;
 pub mod strong_checksum;
+pub mod network;
+use thiserror::Error;
+
 
 #[derive(Debug)]
 pub struct ChecksumConfig {
@@ -21,7 +25,7 @@ impl Default for ChecksumConfig {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Copy, Clone)]
 pub struct CheckSum {
     pub weak: WeakCheckSum,
     pub strong: StrongCheckSum
@@ -78,4 +82,28 @@ pub trait Checksums {
     fn checksums<'buf>(&self, data: &'buf [u8]) -> Box<dyn Iterator<Item=Self::Output> + 'buf>;
     /// Returns a non-overlapping iterator over the checksums of the data.
     fn checksums_non_overlapping<'buf>(&self, data: &'buf [u8]) -> Box<dyn Iterator<Item=Self::Output> + 'buf>;
+}
+
+
+pub type Result<T> = std::result::Result<T, SyncrError>;
+
+
+#[derive(Error, Debug)]
+pub enum SyncrError {
+    #[error("Client disconnected unexpectedly while sending weak checksums.")]
+    UnexpectedEndOfFileWhileReadingWeakChecksums,
+    #[error("Client disconnected unexpectedly while sending file name.")]
+    UnexpectedEndOfFileWhileReadingFileName,
+    #[error("Underlying IO error: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("Error while parsing file name: {0}")]
+    InvalidFileName(#[from] std::str::Utf8Error),
+    #[error("Serialization Error: {0}")]
+    SerializationError(#[from] rmp_serde::encode::Error),
+    #[error("Deserialization Error: {0}")]
+    DeserializationError(#[from] rmp_serde::decode::Error),
+    #[error("Connection reset by peer.")]
+    ConnectionResetByPeer,
+    #[error("SendError: {0}")]
+    SyncMpScError(#[from] tokio::sync::mpsc::error::SendError<Message>),
 }
