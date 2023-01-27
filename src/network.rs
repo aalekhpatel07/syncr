@@ -4,7 +4,7 @@ use serde::{
     Serialize,
     Deserialize
 };
-use bytes::BytesMut;
+use bytes::{BytesMut, Buf};
 use tracing::trace;
 
 #[derive(Debug)]
@@ -63,7 +63,6 @@ impl Connection {
                             let msg_debug = format!("{:#?}", message);
                             self.inbound_message_tx.send(message).await?;
                             trace!("Received message: ({})", msg_debug);
-                            self.buffer.clear();
                         }
                     }
                 },
@@ -71,9 +70,13 @@ impl Connection {
         }
     }
 
-    pub async fn read_message(&mut self) -> crate::Result<Option<Message>> {
+    async fn read_message(&mut self) -> crate::Result<Option<Message>> {
         loop {
             if let Ok(message) = rmp_serde::from_slice(&self.buffer) {
+                // A bit dubious approach to get the total bytes deserialized to get the framing to work correctly.
+                let bytes_serialized = rmp_serde::encode::to_vec(&message)?.len();
+                self.buffer.advance(bytes_serialized);
+
                 return Ok(Some(message));
             }
 
@@ -94,7 +97,6 @@ impl Connection {
 
 
 #[derive(Debug, Serialize, Deserialize)]
-// #[serde(tag = "type")]
 pub enum Message {
     FileName(String),
     WeakChecksums(Vec<u32>),
